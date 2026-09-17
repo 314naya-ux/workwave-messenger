@@ -546,36 +546,26 @@
        1. 로그인 전 화면 (Pre-Login Screen)
        ========================================== -->
   <div id="login-screen">
-    <div class="login-card">
+    <div class="login-card" style="position:relative;">
+      <!-- OAuth 설정 톱니바퀴 아이콘 (우측 상단) -->
+      <span onclick="openSupabaseModal()" title="OAuth / Supabase 설정" style="position:absolute; top:16px; right:16px; color:#94A3B8; cursor:pointer; font-size:16px;">
+        <i class="fa-solid fa-gear"></i>
+      </span>
+
       <div class="login-brand">
         <i class="fa-solid fa-comments"></i>
         <h1>WorkWave</h1>
       </div>
       <p class="login-desc">사내 계정으로 로그인하여<br>업무 대화를 시작하세요.</p>
       
-      <!-- 구글 공식 로그인 버튼이 들어갈 컨테이너 -->
+      <!-- 구글 공식 SDK 로그인 버튼 컨테이너 -->
       <div id="g_id_signin_button" class="g-btn-wrapper"></div>
 
-      <!-- 기본 구글 커스텀 로그인 버튼 -->
+      <!-- 단일 구글 로그인 버튼 -->
       <button class="btn-google-login" id="custom-google-btn" onclick="handleGoogleLogin()">
         <i class="fa-brands fa-google"></i>
-        Google 계정으로 로그인 (Direct / Demo)
+        Google 계정으로 로그인
       </button>
-
-      <!-- Supabase Auth 구글 로그인 버튼 -->
-      <button class="btn-google-login" style="background:#10B981; margin-top:8px;" onclick="loginWithSupabaseGoogle()">
-        <i class="fa-solid fa-bolt"></i>
-        Supabase Auth로 로그인
-      </button>
-
-      <div style="display:flex; justify-content:center; gap:16px; margin-top:14px;">
-        <span class="client-id-config-link" onclick="openClientIdModal()">
-          <i class="fa-solid fa-gear"></i> Google OAuth
-        </span>
-        <span class="client-id-config-link" onclick="openSupabaseModal()" style="color:#10B981;">
-          <i class="fa-solid fa-database"></i> Supabase 연동
-        </span>
-      </div>
     </div>
   </div>
 
@@ -888,22 +878,22 @@
       return JSON.parse(jsonPayload);
     }
 
-    // 구글 커스텀 버튼 클릭 또는 시연용 로그인
-    function handleGoogleLogin() {
-      if (googleClientId && typeof google !== 'undefined' && google.accounts && google.accounts.id) {
-        google.accounts.id.prompt(); // Google One Tap / Prompt
+    // 단일 구글 로그인 버튼 클릭 처리
+    async function handleGoogleLogin() {
+      // 1. Supabase 연동이 설정되어 있으면 Supabase 구글 OAuth 로그인 실행
+      if (supabaseClient) {
+        await loginWithSupabaseGoogle();
         return;
       }
 
-      // Client ID가 없거나 시연용 클릭 시
-      state.currentUser = {
-        name: '게스트 (구글 시연)',
-        email: 'guest@google.com',
-        avatarUrl: 'https://lh3.googleusercontent.com/a/default-user=s96-c',
-        avatarText: 'G'
-      };
+      // 2. Google Client ID가 설정되어 있으면 구글 GIS OAuth 프롬프트 실행
+      if (googleClientId && typeof google !== 'undefined' && google.accounts && google.accounts.id) {
+        google.accounts.id.prompt();
+        return;
+      }
 
-      completeLogin();
+      // 3. 아직 Key/ID가 설정되어 있지 않은 경우 연동 설정 모달 표출
+      openSupabaseModal();
     }
 
     function completeLogin() {
