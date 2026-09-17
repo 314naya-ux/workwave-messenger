@@ -1047,9 +1047,10 @@
     }
 
     // ------------------------------------------
-    // BroadcastChannel 및 Supabase 융합 실시간 대화
+    // Supabase DB & Realtime WebSocket 융합 대화
     // ------------------------------------------
     const chatBroadcastChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('workwave_messenger_channel') : null;
+    let supabaseRealtimeChannel = null;
 
     if (chatBroadcastChannel) {
       chatBroadcastChannel.onmessage = (event) => {
@@ -1087,15 +1088,29 @@
       if (!supabaseClient) return;
 
       try {
+        // 1. Supabase 데이터베이스 테이블 실시간 감지
         supabaseClient
-          .channel('public:messages')
+          .channel('public:messages_table')
           .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, payload => {
             const row = payload.new;
             const formatted = formatMessageRow(row);
 
-            // 내가 3초 이내 전송한 대화 중복 방지
-            if (!state.messages.some(m => m.id === formatted.id || (m.text === formatted.text && m.isMe && Date.now() - m.id < 4000))) {
+            if (!state.messages.some(m => m.id === formatted.id || (m.text && m.text === formatted.text && m.isMe && Date.now() - m.id < 5000))) {
               state.messages.push(formatted);
+              renderMessages();
+              scrollToBottom();
+            }
+          })
+          .subscribe();
+
+        // 2. Supabase 전세계 멀티 유저 실시간 브로드캐스트 채널
+        supabaseRealtimeChannel = supabaseClient.channel('global_workwave_chat');
+        supabaseRealtimeChannel
+          .on('broadcast', { event: 'new_msg' }, payload => {
+            const incoming = payload.payload;
+            if (incoming && incoming.id && !state.messages.some(m => m.id === incoming.id)) {
+              const copy = Object.assign({}, incoming, { isMe: false });
+              state.messages.push(copy);
               renderMessages();
               scrollToBottom();
             }
@@ -1137,7 +1152,7 @@
         created_at: new Date().toISOString()
       };
 
-      // 비동기로 데이터베이스 저장 (UI 멈춤 없음)
+      // 비동기로 데이터베이스 저장
       supabaseClient.from('messages').insert([payload]).then(({ error }) => {
         if (error) {
           console.warn("Supabase insert note:", error.message);
@@ -1196,10 +1211,19 @@
         renderMessages();
         scrollToBottom();
 
+        // 1. 브라우저 탭간 전송
         if (chatBroadcastChannel) {
           try { chatBroadcastChannel.postMessage(newMessage); } catch(err){}
         }
 
+        // 2. Supabase 전세계 멀티유저 실시간 웹소켓 브로드캐스트
+        if (supabaseRealtimeChannel) {
+          try {
+            supabaseRealtimeChannel.send({ type: 'broadcast', event: 'new_msg', payload: newMessage });
+          } catch(err){}
+        }
+
+        // 3. Supabase DB 저장
         sendToSupabase('', imageDataUrl);
       };
 
@@ -1239,21 +1263,28 @@
         isMe: true
       };
 
-      // 1. 화면에 즉시 100% 반영
+      // 1. 화면 즉시 반영
       state.messages.push(newMessage);
       renderMessages();
       scrollToBottom();
 
-      // 입력창 즉시 비우기 & 포커스 유지
+      // 입력창 비우기 & 포커스 유지
       inputEl.value = '';
       inputEl.focus();
 
-      // 2. 다른 브라우저 탭으로 즉시 전송
+      // 2. 브라우저 탭간 즉시 전송
       if (chatBroadcastChannel) {
         try { chatBroadcastChannel.postMessage(newMessage); } catch(err){}
       }
 
-      // 3. Supabase DB 비동기 저장
+      // 3. Supabase 전세계 멀티유저 실시간 웹소켓 브로드캐스트 전송!
+      if (supabaseRealtimeChannel) {
+        try {
+          supabaseRealtimeChannel.send({ type: 'broadcast', event: 'new_msg', payload: newMessage });
+        } catch(err){}
+      }
+
+      // 4. Supabase DB 비동기 저장
       sendToSupabase(textWithEmoji, null);
     }
 
