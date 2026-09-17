@@ -743,6 +743,8 @@
           supabaseClient = supabase.createClient(SUPABASE_URL, supabaseAnonKey);
           console.log("Supabase Client initialized successfully!");
           checkSupabaseAuthSession();
+          loadInitialMessages();
+          subscribeToRealtimeMessages();
         } catch (err) {
           console.error("Supabase Init Error:", err);
         }
@@ -1020,7 +1022,8 @@
 
         let senderHtml = '';
         if (!msg.isMe) {
-          senderHtml = `<div class="sender-name">${msg.sender}</div>`;
+          const avatarPic = msg.avatarUrl ? `<img src="${msg.avatarUrl}" style="width:20px; height:20px; border-radius:50%; vertical-align:middle; margin-right:4px;">` : '';
+          senderHtml = `<div class="sender-name">${avatarPic}${escapeHtml(msg.sender)}</div>`;
         }
 
         let contentHtml = '';
@@ -1041,6 +1044,91 @@
 
         container.appendChild(groupEl);
       });
+    }
+
+    // ------------------------------------------
+    // Supabase DB 메시지 로드 & 실시간 연동
+    // ------------------------------------------
+    async function loadInitialMessages() {
+      if (!supabaseClient) return;
+      try {
+        const { data, error } = await supabaseClient
+          .from('messages')
+          .select('*')
+          .order('created_at', { ascending: true })
+          .limit(100);
+
+        if (data && data.length > 0) {
+          state.messages = data.map(row => formatMessageRow(row));
+          renderMessages();
+          scrollToBottom();
+        }
+      } catch (e) {
+        console.log("Supabase messages fetch note:", e);
+      }
+    }
+
+    function subscribeToRealtimeMessages() {
+      if (!supabaseClient) return;
+
+      try {
+        supabaseClient
+          .channel('public:messages')
+          .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, payload => {
+            const row = payload.new;
+            const formatted = formatMessageRow(row);
+
+            // 본인이 작성한 메시지가 이미 local state에 존재하지 않을 때만 추가
+            if (!state.messages.some(m => m.id === formatted.id || (m.text === formatted.text && m.isMe && Date.now() - m.id < 3000))) {
+              state.messages.push(formatted);
+              renderMessages();
+              scrollToBottom();
+            }
+          })
+          .subscribe();
+      } catch (e) {
+        console.error("Realtime subscribe error:", e);
+      }
+    }
+
+    function formatMessageRow(row) {
+      const isMe = state.currentUser && (
+        (row.user_id && row.user_id === state.currentUser.id) || 
+        (row.email && row.email === state.currentUser.email)
+      );
+      const timeStr = row.created_at ? new Date(row.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '방금 전';
+
+      return {
+        id: row.id || Date.now(),
+        sender: row.sender || '사용자',
+        text: row.text || '',
+        image: row.image || null,
+        avatarUrl: row.avatar_url || '',
+        time: timeStr,
+        isMe: Boolean(isMe)
+      };
+    }
+
+    async function sendToSupabase(text, imageDataUrl) {
+      if (!supabaseClient) return;
+      try {
+        const payload = {
+          user_id: state.currentUser ? state.currentUser.id || null : null,
+          email: state.currentUser ? state.currentUser.email || null : null,
+          sender: state.currentUser ? state.currentUser.name : '게스트',
+          avatar_url: state.currentUser ? state.currentUser.avatarUrl || '' : '',
+          text: text || '',
+          image: imageDataUrl || null,
+          created_at: new Date().toISOString()
+        };
+
+        const { error } = await supabaseClient.from('messages').insert([payload]);
+        if (error) {
+          console.warn("Supabase messages insert info:", error.message);
+        }
+      } catch (e) {
+        console.error("Supabase insert error:", e);
+      }
     }
 
     // ------------------------------------------
@@ -1081,7 +1169,7 @@
 
         const newMessage = {
           id: Date.now(),
-          sender: state.currentUser ? state.currentUser.name : '게스트',
+          sender: state.currentUser ? state.currentUser.name : '나',
           text: '',
           image: imageDataUrl,
           time: timeString,
@@ -1092,20 +1180,8 @@
         renderMessages();
         scrollToBottom();
 
-        // 🤖 김철수 팀장의 이미지 수신 자동 답장
-        setTimeout(() => {
-          const replyTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-          const autoReplyMsg = {
-            id: Date.now(),
-            sender: '김철수 팀장',
-            text: '보내주신 이미지 파일 잘 확인했습니다! 🖼️ 👍',
-            time: replyTime,
-            isMe: false
-          };
-          state.messages.push(autoReplyMsg);
-          renderMessages();
-          scrollToBottom();
-        }, 1200);
+        // Supabase DB 저장 & 실시간 브로드캐스트 (자동 응답 없음)
+        sendToSupabase('', imageDataUrl);
       };
 
       reader.readAsDataURL(file);
@@ -1122,7 +1198,7 @@
     }
 
     // ------------------------------------------
-    // 6. 메시지 전송 및 자동 답장 처리
+    // 6. 메시지 전송 처리 (자동 응답 중지)
     // ------------------------------------------
     function handleSendMessage() {
       const inputEl = document.getElementById('message-input');
@@ -1132,31 +1208,28 @@
 
       // 😃 자동 이모티콘 추가 적용
       const textWithEmoji = addAutoEmoji(text);
-
       const now = new Date();
       const timeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
       const newMessage = {
         id: Date.now(),
-        sender: state.currentUser ? state.currentUser.name : '게스트',
+        sender: state.currentUser ? state.currentUser.name : '나',
         text: textWithEmoji,
         time: timeString,
         isMe: true
       };
 
-      // // TODO: Supabase 실시간 DB 저장 및 브로드캐스트 (supabase.from('messages').insert)
-
-      // 메모리 상태 업데이트 및 DOM 렌더링
+      // 화면 즉시 반영
       state.messages.push(newMessage);
       renderMessages();
       scrollToBottom();
 
+      // Supabase DB 저장 & 실시간 브로드캐스트 (자동 응답 없음)
+      sendToSupabase(textWithEmoji, null);
+
       // 입력창 초기화 및 포커스 유지
       inputEl.value = '';
       inputEl.focus();
-
-      // 🤖 1.2초 후 김철수 팀장의 자동 답장 유발
-      triggerAutoReply(text);
     }
 
     // 😃 키워드 감지 자동 이모티콘 변환 함수
@@ -1188,39 +1261,6 @@
       });
 
       return result;
-    }
-
-    // 🤖 자동 답장 로직 (시연용)
-    function triggerAutoReply(userText) {
-      setTimeout(() => {
-        let replyText = "네, 확인했습니다! 내용 검토 후 곧 피드백 드리겠습니다. 👨‍💻";
-
-        // 키워드별 맞춤 자동 답장
-        if (userText.includes("안녕") || userText.includes("반가")) {
-          replyText = "안녕하세요 게스트님! 오늘 업무 진행 상황은 원활하신가요? 👋";
-        } else if (userText.includes("일정") || userText.includes("프로젝트") || userText.includes("진행")) {
-          replyText = "네, 관련 진행 상황 확인하였습니다. 오늘 오후 회의 때 상세히 논의하시죠! 📅 🚀";
-        } else if (userText.includes("감사") || userText.includes("고맙")) {
-          replyText = "별말씀을요! 추가로 필요한 부분 있으시면 언제든 말씀 주세요 🙏 👍";
-        } else if (userText.includes("오류") || userText.includes("버그") || userText.includes("에러")) {
-          replyText = "어떤 부분에서 이슈가 발생했는지 화면 캡처와 함께 전달 부탁드립니다! 🐛";
-        } else if (userText.includes("식사") || userText.includes("점심") || userText.includes("밥")) {
-          replyText = "오늘 점심 메뉴는 구내식당 한식 코너 추천합니다! 🍱 😊";
-        }
-
-        const replyTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        const autoReplyMsg = {
-          id: Date.now(),
-          sender: '김철수 팀장',
-          text: replyText,
-          time: replyTime,
-          isMe: false
-        };
-
-        state.messages.push(autoReplyMsg);
-        renderMessages();
-        scrollToBottom();
-      }, 1200);
     }
 
     // Enter 키 입력 감지
