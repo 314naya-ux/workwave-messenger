@@ -12,6 +12,8 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <!-- Google Identity Services (GIS) Web SDK -->
   <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <!-- Supabase JS Client v2 CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   
   <style>
     /* ==========================================
@@ -557,12 +559,21 @@
       <!-- 기본 구글 커스텀 로그인 버튼 -->
       <button class="btn-google-login" id="custom-google-btn" onclick="handleGoogleLogin()">
         <i class="fa-brands fa-google"></i>
-        Google 계정으로 로그인
+        Google 계정으로 로그인 (Direct / Demo)
       </button>
 
-      <div>
+      <!-- Supabase Auth 구글 로그인 버튼 -->
+      <button class="btn-google-login" style="background:#10B981; margin-top:8px;" onclick="loginWithSupabaseGoogle()">
+        <i class="fa-solid fa-bolt"></i>
+        Supabase Auth로 로그인
+      </button>
+
+      <div style="display:flex; justify-content:center; gap:16px; margin-top:14px;">
         <span class="client-id-config-link" onclick="openClientIdModal()">
-          <i class="fa-solid fa-gear"></i> Google Client ID 설정
+          <i class="fa-solid fa-gear"></i> Google OAuth
+        </span>
+        <span class="client-id-config-link" onclick="openSupabaseModal()" style="color:#10B981;">
+          <i class="fa-solid fa-database"></i> Supabase 연동
         </span>
       </div>
     </div>
@@ -580,6 +591,32 @@
       <div style="display:flex; gap:8px;">
         <button type="button" onclick="saveClientId()" style="flex:1; height:40px; background:#2563EB; color:#fff; border:none; border-radius:6px; font-weight:600; cursor:pointer;">저장 및 적용</button>
         <button type="button" onclick="closeClientIdModal()" style="height:40px; padding:0 16px; background:#F1F5F9; color:#64748B; border:none; border-radius:6px; font-weight:600; cursor:pointer;">닫기</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Supabase 설정 모달 -->
+  <div id="supabase-modal" class="image-modal" onclick="if(event.target===this) closeSupabaseModal()">
+    <div style="background:#fff; width:440px; padding:28px; border-radius:12px; position:relative; text-align:left;">
+      <span class="modal-close" onclick="closeSupabaseModal()" style="color:#000; top:12px; right:16px;">&times;</span>
+      <h3 style="margin-bottom:12px; font-size:18px; color:#10B981;">⚡ Supabase 백엔드 연동</h3>
+      
+      <label style="font-size:12px; font-weight:600; color:#475569; display:block; margin-bottom:4px;">Supabase Project URL</label>
+      <input type="text" id="supabase-url-input" value="https://dddhnkbiwnkxtghnbgdc.supabase.co" readonly style="width:100%; height:38px; padding:0 10px; border:1px solid #CBD5E1; background:#F8FAFC; border-radius:6px; font-size:13px; margin-bottom:12px; color:#334155;">
+
+      <label style="font-size:12px; font-weight:600; color:#475569; display:block; margin-bottom:4px;">Supabase Auth Callback URL (Dashboard용)</label>
+      <input type="text" value="https://dddhnkbiwnkxtghnbgdc.supabase.co/auth/v1/callback" readonly style="width:100%; height:38px; padding:0 10px; border:1px solid #CBD5E1; background:#F8FAFC; border-radius:6px; font-size:12px; margin-bottom:12px; color:#334155;">
+
+      <label style="font-size:12px; font-weight:600; color:#475569; display:block; margin-bottom:4px;">Supabase Anon Key (Public Key)</label>
+      <input type="text" id="supabase-key-input" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." style="width:100%; height:38px; padding:0 10px; border:1px solid #CBD5E1; border-radius:6px; font-size:12px; margin-bottom:16px;">
+
+      <p style="font-size:12px; color:#64748B; margin-bottom:16px; line-height:1.4;">
+        💡 Supabase Dashboard ➔ Project Settings ➔ API ➔ <b>anon public key</b>를 복사해 위 상자에 붙여넣어 주세요.
+      </p>
+
+      <div style="display:flex; gap:8px;">
+        <button type="button" onclick="saveSupabaseConfig()" style="flex:1; height:40px; background:#10B981; color:#fff; border:none; border-radius:6px; font-weight:600; cursor:pointer;">연동 저장 및 활성화</button>
+        <button type="button" onclick="closeSupabaseModal()" style="height:40px; padding:0 16px; background:#F1F5F9; color:#64748B; border:none; border-radius:6px; font-weight:600; cursor:pointer;">닫기</button>
       </div>
     </div>
   </div>
@@ -698,13 +735,106 @@
     };
 
     // ------------------------------------------
-    // 1. Google OAuth 로그인 처리
+    // 1. Google OAuth 및 Supabase 로그인 처리
     // ------------------------------------------
     let googleClientId = localStorage.getItem('google_client_id') || '';
+    const SUPABASE_URL = "https://dddhnkbiwnkxtghnbgdc.supabase.co";
+    let supabaseAnonKey = localStorage.getItem('supabase_anon_key') || '';
+    let supabaseClient = null;
 
     window.addEventListener('load', function() {
       initGoogleSignIn();
+      initSupabase();
     });
+
+    function initSupabase() {
+      if (typeof supabase !== 'undefined' && supabase.createClient && SUPABASE_URL && supabaseAnonKey) {
+        try {
+          supabaseClient = supabase.createClient(SUPABASE_URL, supabaseAnonKey);
+          console.log("Supabase Client initialized successfully!");
+          checkSupabaseAuthSession();
+        } catch (err) {
+          console.error("Supabase Init Error:", err);
+        }
+      }
+    }
+
+    async function checkSupabaseAuthSession() {
+      if (!supabaseClient) return;
+
+      try {
+        const { data: { session } } = await supabaseClient.auth.getSession();
+        if (session && session.user) {
+          applySupabaseUser(session.user);
+        }
+
+        supabaseClient.auth.onAuthStateChange((event, session) => {
+          if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session && session.user) {
+            applySupabaseUser(session.user);
+          } else if (event === 'SIGNED_OUT') {
+            state.currentUser = null;
+            document.getElementById('app-screen').style.display = 'none';
+            document.getElementById('login-screen').style.display = 'flex';
+          }
+        });
+      } catch (e) {
+        console.error("Supabase session check error:", e);
+      }
+    }
+
+    function applySupabaseUser(user) {
+      const meta = user.user_metadata || {};
+      state.currentUser = {
+        id: user.id,
+        name: meta.full_name || meta.name || user.email || 'Supabase 사용자',
+        email: user.email,
+        avatarUrl: meta.avatar_url || meta.picture || '',
+        avatarText: (meta.full_name || user.email || 'S').charAt(0)
+      };
+      completeLogin();
+    }
+
+    async function loginWithSupabaseGoogle() {
+      if (!supabaseClient) {
+        openSupabaseModal();
+        return;
+      }
+
+      const redirectUrl = window.location.origin + window.location.pathname;
+      const { data, error } = await supabaseClient.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: redirectUrl
+        }
+      });
+
+      if (error) {
+        alert("Supabase 구글 로그인 오류: " + error.message);
+      }
+    }
+
+    function openSupabaseModal() {
+      document.getElementById('supabase-key-input').value = supabaseAnonKey;
+      document.getElementById('supabase-modal').style.display = 'flex';
+    }
+
+    function closeSupabaseModal() {
+      document.getElementById('supabase-modal').style.display = 'none';
+    }
+
+    function saveSupabaseConfig() {
+      const keyVal = document.getElementById('supabase-key-input').value.trim();
+      supabaseAnonKey = keyVal;
+      if (keyVal) {
+        localStorage.setItem('supabase_anon_key', keyVal);
+        alert('Supabase 연동이 저장되었습니다. Supabase 구글 로그인을 사용하실 수 있습니다.');
+        initSupabase();
+      } else {
+        localStorage.removeItem('supabase_anon_key');
+        alert('Supabase Anon Key가 초기화되었습니다.');
+      }
+      closeSupabaseModal();
+    }
 
     function initGoogleSignIn() {
       if (!googleClientId) return;
@@ -816,9 +946,14 @@
     // ------------------------------------------
     // 2. 로그아웃 처리
     // ------------------------------------------
-    function handleLogout() {
+    async function handleLogout() {
       if (typeof google !== 'undefined' && google.accounts && google.accounts.id) {
         google.accounts.id.disableAutoSelect();
+      }
+      if (supabaseClient) {
+        try {
+          await supabaseClient.auth.signOut();
+        } catch(e) {}
       }
 
       state.currentUser = null;
