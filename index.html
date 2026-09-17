@@ -1047,8 +1047,23 @@
     }
 
     // ------------------------------------------
-    // Supabase DB 메시지 로드 & 실시간 연동
+    // BroadcastChannel 및 Supabase 융합 실시간 대화
     // ------------------------------------------
+    const chatBroadcastChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('workwave_messenger_channel') : null;
+
+    if (chatBroadcastChannel) {
+      chatBroadcastChannel.onmessage = (event) => {
+        const incomingMsg = event.data;
+        if (incomingMsg && incomingMsg.id && !state.messages.some(m => m.id === incomingMsg.id)) {
+          // 다른 탭에서 보낸 대화 수신
+          const copyMsg = Object.assign({}, incomingMsg, { isMe: false });
+          state.messages.push(copyMsg);
+          renderMessages();
+          scrollToBottom();
+        }
+      };
+    }
+
     async function loadInitialMessages() {
       if (!supabaseClient) return;
       try {
@@ -1078,8 +1093,8 @@
             const row = payload.new;
             const formatted = formatMessageRow(row);
 
-            // 본인이 작성한 메시지가 이미 local state에 존재하지 않을 때만 추가
-            if (!state.messages.some(m => m.id === formatted.id || (m.text === formatted.text && m.isMe && Date.now() - m.id < 3000))) {
+            // 내가 3초 이내 전송한 대화 중복 방지
+            if (!state.messages.some(m => m.id === formatted.id || (m.text === formatted.text && m.isMe && Date.now() - m.id < 4000))) {
               state.messages.push(formatted);
               renderMessages();
               scrollToBottom();
@@ -1109,26 +1124,27 @@
       };
     }
 
-    async function sendToSupabase(text, imageDataUrl) {
+    function sendToSupabase(text, imageDataUrl) {
       if (!supabaseClient) return;
-      try {
-        const payload = {
-          user_id: state.currentUser ? state.currentUser.id || null : null,
-          email: state.currentUser ? state.currentUser.email || null : null,
-          sender: state.currentUser ? state.currentUser.name : '게스트',
-          avatar_url: state.currentUser ? state.currentUser.avatarUrl || '' : '',
-          text: text || '',
-          image: imageDataUrl || null,
-          created_at: new Date().toISOString()
-        };
+      
+      const payload = {
+        user_id: state.currentUser ? state.currentUser.id || null : null,
+        email: state.currentUser ? state.currentUser.email || null : null,
+        sender: state.currentUser ? state.currentUser.name : '게스트',
+        avatar_url: state.currentUser ? state.currentUser.avatarUrl || '' : '',
+        text: text || '',
+        image: imageDataUrl || null,
+        created_at: new Date().toISOString()
+      };
 
-        const { error } = await supabaseClient.from('messages').insert([payload]);
+      // 비동기로 데이터베이스 저장 (UI 멈춤 없음)
+      supabaseClient.from('messages').insert([payload]).then(({ error }) => {
         if (error) {
-          console.warn("Supabase messages insert info:", error.message);
+          console.warn("Supabase insert note:", error.message);
         }
-      } catch (e) {
-        console.error("Supabase insert error:", e);
-      }
+      }).catch(err => {
+        console.error("Supabase insert catch:", err);
+      });
     }
 
     // ------------------------------------------
@@ -1164,12 +1180,12 @@
       const reader = new FileReader();
       reader.onload = function(e) {
         const imageDataUrl = e.target.result;
-        const now = new Date();
-        const timeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const timeString = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
         const newMessage = {
           id: Date.now(),
           sender: state.currentUser ? state.currentUser.name : '나',
+          avatarUrl: state.currentUser ? state.currentUser.avatarUrl || '' : '',
           text: '',
           image: imageDataUrl,
           time: timeString,
@@ -1180,7 +1196,10 @@
         renderMessages();
         scrollToBottom();
 
-        // Supabase DB 저장 & 실시간 브로드캐스트 (자동 응답 없음)
+        if (chatBroadcastChannel) {
+          try { chatBroadcastChannel.postMessage(newMessage); } catch(err){}
+        }
+
         sendToSupabase('', imageDataUrl);
       };
 
@@ -1198,7 +1217,7 @@
     }
 
     // ------------------------------------------
-    // 6. 메시지 전송 처리 (자동 응답 중지)
+    // 6. 메시지 전송 처리
     // ------------------------------------------
     function handleSendMessage() {
       const inputEl = document.getElementById('message-input');
@@ -1208,28 +1227,34 @@
 
       // 😃 자동 이모티콘 추가 적용
       const textWithEmoji = addAutoEmoji(text);
-      const now = new Date();
-      const timeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const timeString = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
       const newMessage = {
         id: Date.now(),
         sender: state.currentUser ? state.currentUser.name : '나',
+        avatarUrl: state.currentUser ? state.currentUser.avatarUrl || '' : '',
         text: textWithEmoji,
+        image: null,
         time: timeString,
         isMe: true
       };
 
-      // 화면 즉시 반영
+      // 1. 화면에 즉시 100% 반영
       state.messages.push(newMessage);
       renderMessages();
       scrollToBottom();
 
-      // Supabase DB 저장 & 실시간 브로드캐스트 (자동 응답 없음)
-      sendToSupabase(textWithEmoji, null);
-
-      // 입력창 초기화 및 포커스 유지
+      // 입력창 즉시 비우기 & 포커스 유지
       inputEl.value = '';
       inputEl.focus();
+
+      // 2. 다른 브라우저 탭으로 즉시 전송
+      if (chatBroadcastChannel) {
+        try { chatBroadcastChannel.postMessage(newMessage); } catch(err){}
+      }
+
+      // 3. Supabase DB 비동기 저장
+      sendToSupabase(textWithEmoji, null);
     }
 
     // 😃 키워드 감지 자동 이모티콘 변환 함수
@@ -1263,9 +1288,10 @@
       return result;
     }
 
-    // Enter 키 입력 감지
+    // Enter 키 입력 감지 (Shift+Enter는 줄바꿈, Enter는 전송)
     function handleKeyPress(event) {
-      if (event.key === 'Enter') {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
         handleSendMessage();
       }
     }
